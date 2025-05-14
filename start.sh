@@ -480,7 +480,7 @@ generate_config() {
     $([[ "$type" == "2" || "$type" =~ ^(3|4)\.[0-9]+$ ]] && cat temphy2.json)
    ],
     "outbounds": [
-    $([[ "$outbound" == "1" ]] && make_outbound_wireguard) 
+    $([[ "$outbound" == "1" ]] && make_outbound_wireguard)
     $([[ "$outbound" == "2" ]] && cat temp_outbound_socks5.json && rm -rf temp_outbound_socks5.json)
     {
       "type": "direct",
@@ -508,7 +508,7 @@ generate_config() {
         "protocol": "dns",
         "outbound": "dns-out"
       },
-      { 
+      {
         "ip_is_private": true,
         "outbound": "direct"
       },
@@ -1102,6 +1102,9 @@ uninstall() {
 InitServer() {
   read -p "$(red "将初始化帐号系统，要继续？[y/n] [n]:")" input
   input=${input:-n}
+  if [[ "$input" != "y" ]]; then
+    return
+  fi
   read -p "是否保留用户配置？[y/n] [y]:" saveProfile
   saveProfile=${saveProfile:-y}
 
@@ -1111,7 +1114,7 @@ InitServer() {
     killUserProc
     green "清理磁盘中..."
     if [[ "$saveProfile" == "y" ]] || [[ "$saveProfile" == "Y" ]]; then
-      rm -rf ~/* 2>/dev/null
+      find ~ -mindepth 1 -maxdepth 1 ! -name "domains" ! -name "backups" ! -name "repo" ! -name "mail" ! -name ".*" -exec rm -rf {} + >/dev/null 2>&1
     else
       rm -rf ~/* ~/.* 2>/dev/null
       clean_all_domains
@@ -2188,15 +2191,20 @@ portServ() {
 }
 
 cronLE() {
-  read -p "请输入定时运行的时间间隔(小时[1-23]):" tm
-  tm=${tm:-""}
-  if [[ -z "$tm" ]]; then
-    red "时间不能为空"
-    return 1
-  fi
-  if [[ $tm -lt 1 || $tm -gt 23 ]]; then
-    red "输入非法!"
-    return 1
+  local nointeraction=$1
+  if [[ -n "$nointeraction" ]]; then
+    tm=1
+  else
+    read -p "请输入定时运行的时间间隔(小时[1-23]):" tm
+    tm=${tm:-""}
+    if [[ -z "$tm" ]]; then
+      red "时间不能为空"
+      return 1
+    fi
+    if [[ $tm -lt 1 || $tm -gt 23 ]]; then
+      red "输入非法!"
+      return 1
+    fi
   fi
   crontab -l >le.cron
   echo "0 */$tm * * * $workpath/cronSSL.sh $domain > /dev/null 2>&1 " >>le.cron
@@ -2213,53 +2221,68 @@ get_default_webip() {
 }
 
 applyLE() {
-  local domain=$1
-  local webIp=$2
+  local l_domain=$1
+  local l_webip=$2
+  local nointeraction=$3
   workpath="${installpath}/serv00-play/ssl"
   cd "$workpath"
 
-  if [[ -z "$domain" ]]; then
+  #echo "domain=$l_domain, webip=$l_webip, nointeraction=$nointeraction"
+  if [[ -z "$l_domain" ]]; then
     read -p "请输入待申请证书的域名:" domain
-    domain=${domain:-""}
-    if [[ -z "$domain" ]]; then
+    l_domain=${l_domain:-""}
+    if [[ -z "$l_domain" ]]; then
       red "域名不能为空"
       return 1
     fi
   fi
   inCron="0"
-  if crontab -l | grep -F "$domain" >/dev/null 2>&1; then
+  if crontab -l | grep -F "$l_domain" >/dev/null 2>&1; then
     inCron="1"
-    echo "该域名已配置定时申请证书，是否删除定时配置记录，改为手动申请？[y/n] [n]:" input
+    if [[ -z "$nointeraction" ]]; then
+      echo "该域名已配置定时申请证书，是否删除定时配置记录，改为手动申请？[y/n] [n]:" input
+      input=${input:-n}
+
+      if [[ "$input" == "y" ]]; then
+        crontab -l | grep -v "$l_domain" | crontab -
+      fi
+    else
+      crontab -l | grep -v "$l_domain" | crontab -
+    fi
+  fi
+  if [[ -z "$l_webip" ]]; then
+    read -p "是否指定webip? [y/n] [n]:" input
     input=${input:-n}
 
     if [[ "$input" == "y" ]]; then
-      crontab -l | grep -v "$domain" | crontab -
-    fi
-  fi
-  if [[ -z "$webIp" ]]; then
-    read -p "是否指定webip? [y/n] [n]:" input
-    input=${input:-n}
-    if [[ "$input" == "y" ]]; then
-      read -p "请输入webip:" webIp
-      if [[ -z "webIp" ]]; then
-        red "webip 不能为空!!!"
+      read -p "请输入webIp:" l_webip
+      if [[ -z "$l_webip" ]]; then
+        red "webIp 不能为空!!!"
         return 1
       fi
     else
       host="$(hostname | cut -d '.' -f 1)"
       sno=${host/s/web}
-      webIp=$(devil vhost list public | grep "$sno" | awk '{print $1}')
+      l_webip=$(devil vhost list public | grep "$sno" | awk '{print $1}')
     fi
   fi
-  #echo "申请证书时，webip是: $webIp"
-  resp=$(devil ssl www add $webIp le le $domain)
+  #echo "申请证书时，webip是: $l_webip"
+  resp=$(devil ssl www add $l_webip le le $l_domain)
   if [[ ! "$resp" =~ .*succesfully.*$ ]]; then
     red "申请ssl证书失败！$resp"
     if [[ "$inCron" == "0" ]]; then
-      read -p "是否配置定时任务自动申请SSL证书？ [y/n] [n]:" input
-      input=${input:-n}
+      if [[ -z "$nointeraction" ]]; then
+        read -p "是否配置定时任务自动申请SSL证书？ [y/n] [n]:" input
+        input=${input:-n}
+      else
+        input="y"
+      fi
       if [[ "$input" == "y" ]]; then
-        cronLE
+        if [[ -z "$nointeraction" ]]; then
+          cronLE
+        else
+          cronLE $nointeraction
+        fi
       fi
     fi
   else
@@ -2696,6 +2719,7 @@ makeWWW() {
   local port=$2
   local www_type=${3:-"proxy"}
   local input=${4:-""}
+  domain=${5:-"$domain"}
 
   echo "正在处理服务IP,请等待..."
   is_self_domain=0
@@ -2705,18 +2729,22 @@ makeWWW() {
     webIp=$default_webip
   fi
   green "可用webip是: $webIp, 默认webip是: $default_webip"
-  if [[ -z "$input" ]]; then
-    read -p "是否使用自定义域名? [y/n] [n]:" input
-    input=${input:-n}
-  fi
-  if [[ "$input" == "y" ]]; then
-    is_self_domain=1
-    read -p "请输入域名(确保此前域名已指向webip):" domain
-  else
-    if [[ -z ${proc:""} ]]; then
-      read -p "请输入默认域名的二级域名的前缀(如二级域名 sub.main.com， 则填sub):" proc
+  if [[ -z "$domain" ]]; then
+    if [[ -z "$input" ]]; then
+      read -p "是否使用自定义域名? [y/n] [n]:" input
+      input=${input:-n}
     fi
-    domain=$(getUserDoMain "$proc")
+    if [[ "$input" == "y" ]]; then
+      is_self_domain=1
+      read -p "请输入域名(确保此前域名已指向webip):" domain
+    else
+      if [[ -z ${proc:""} ]]; then
+        read -p "请输入默认域名的二级域名的前缀(如二级域名 sub.main.com， 则填sub):" proc
+      fi
+      domain=$(getUserDoMain "$proc")
+    fi
+  else
+    is_self_domain=1
   fi
 
   if [[ -z "$domain" ]]; then
@@ -2740,16 +2768,16 @@ makeWWW() {
   fi
 
   # 自定义域名的特殊处理
-  if [[ $is_self_domain -eq 1 ]]; then
-    host="$(hostname | cut -d '.' -f 1)"
-    sno=${host/s/web}
-    default_webIp=$(devil vhost list public | grep "$sno" | awk '{print $1}')
-    rid=$(devil dns list "$domain" | grep "$default_webIp" | awk '{print $1}')
-    resp=$(echo "y" | devil dns del "$domain" $rid)
-    #echo "resp:$resp"
-  else
-    webIp=$(get_default_webip)
-  fi
+  # if [[ $is_self_domain -eq 1 ]]; then
+  #   host="$(hostname | cut -d '.' -f 1)"
+  #   sno=${host/s/web}
+  #   default_webIp=$(devil vhost list public | grep "$sno" | awk '{print $1}')
+  #   rid=$(devil dns list "$domain" | grep "$default_webIp" | awk '{print $1}')
+  #   resp=$(echo "y" | devil dns del "$domain" $rid)
+  #   #echo "resp:$resp"
+  # else
+  #   webIp=$(get_default_webip)
+  # fi
   # 保存信息
   if [[ "$www_type" == "proxy" ]]; then
     cat >config.json <<EOF
@@ -3204,6 +3232,7 @@ DSServ() {
     echo "3. 配置"
     echo "4. 开启服务"
     echo "5. 停止服务"
+    echo "6. 批量新增域名"
     echo "9. 返回主菜单"
     echo "0. 退出脚本"
     yellow "---------------------"
@@ -3225,6 +3254,9 @@ DSServ() {
       ;;
     5)
       stopDs
+      ;;
+    6)
+      batchAddDomains
       ;;
     9)
       break
@@ -3251,6 +3283,88 @@ write_ds_config() {
 EOF
 
 }
+
+batchAddDomains() {
+  local workdir="${installpath}/serv00-play/domains-support"
+  if [[ ! -e $workdir ]]; then
+    mkdir -p $workdir
+  fi
+  cd $workdir
+
+  read -p "请输入包含域名的文件路径(一行一个域名): " domains_file
+  if [[ ! -f "$domains_file" ]]; then
+    red "文件不存在，请检查路径!"
+    return 1
+  fi
+
+  echo "建站样式选择:"
+  echo "1. 樱花博客"
+  echo "2. 人力资源管理系统"
+  echo "3. 德一教育系统后台"
+  echo "4. 自定义网站"
+  read -p "请选择建站样式(默认: 1): " style_choice
+  style_choice=${style_choice:-1}
+
+  local custom_file=""
+  if [[ "$style_choice" == "4" ]]; then
+    read -p "请输入自定义网站HTML文件路径: " custom_file
+    if [[ ! -f "$custom_file" ]]; then
+      red "自定义HTML文件不存在，请检查路径!"
+      return 1
+    fi
+  fi
+
+  while IFS= read -r domain; do
+    domain=$(echo "$domain" | xargs) # 去除前后空格
+    if [[ -z "$domain" ]]; then
+      continue
+    fi
+
+    domain="${domain,,}" # 转小写
+    domainPath="$installpath/domains/$domain/public_html"
+    webIp=""
+    echo "正在处理域名: $domain"
+    if ! makeWWW "" "" "php" "y" "$domain"; then
+      red "绑定域名 $domain 失败!"
+      continue
+    fi
+
+    if ! applyLE "$domain" "$webIp" "y"; then
+      red "申请证书失败: $domain"
+    fi
+
+    if [[ ! -d "$domainPath" ]]; then
+      red "目标目录不存在: $domainPath"
+      continue
+    fi
+
+    case "$style_choice" in
+    1)
+      cp websites/sakura.html "$domainPath/index.html"
+      sed -i.bak "s|xx|樱花|g" "$domainPath/index.html"
+      ;;
+    2)
+      cp websites/hr.html "$domainPath/index.html"
+      ;;
+    3)
+      cp websites/deyiedu.html "$domainPath/index.html"
+      ;;
+    4)
+      cp "$custom_file" "$domainPath/index.html"
+      ;;
+    *)
+      red "无效的建站样式选择!"
+      continue
+      ;;
+    esac
+
+    add_domain "$domain" "$webIp"
+    green "域名 $domain 的网站安装成功!"
+  done <"$domains_file"
+
+  green "批量新增域名网站完成!"
+}
+
 doDsConfig() {
   read -p "请输入api_token:" api_token
   if [[ -z "$api_token" ]]; then
@@ -3340,7 +3454,8 @@ addDomain() {
     echo "绑定域名失败!"
     return 1
   fi
-  if ! applyLE $domain $webIp; then
+  #echo "after makeWWW, domain=$domain,webIp=$webIp"
+  if ! applyLE "$domain" "$webIp" "n"; then
     echo "申请证书失败!"
     return 1
   fi
@@ -3458,7 +3573,7 @@ addDomain() {
     fi
     curl -X POST "https://$url/api/addrec?token=$api_token" \
       -H "Content-Type: application/json" \
-      -d '{ 
+      -d '{
          "domain": "'"$domain"'",
          "registrar": "'"$registrar"'",
          "registrar_date": "'"$registrar_date"'",
@@ -3718,7 +3833,7 @@ setKeepAliveInterval() {
 
 linkAliveStatment() {
   cat <<EOF
-     全新的保活方式，无需借助cron，也不需要第三方平台(github/青龙/vps等登录方式)进行保活。 
+     全新的保活方式，无需借助cron，也不需要第三方平台(github/青龙/vps等登录方式)进行保活。
   在使用代理客户端的同时自动保活，全程无感！
 EOF
 }
